@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from pathlib import Path
 from typing import Protocol
@@ -51,17 +52,23 @@ def clean_text(text: str) -> str:
     return cleaned
 
 
-def chunk_text(text: str, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP) -> list[str]:
-    if chunk_size <= 0:
-        raise ValueError("chunk_size must be positive")
-    if overlap < 0 or overlap >= chunk_size:
-        raise ValueError("overlap must be non-negative and smaller than chunk_size")
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
 
-    text = text.strip()
-    if not text:
-        return []
 
-    words = text.split()
+def _split_sentences(text: str) -> list[str]:
+    """Split cleaned text into sentences on '. ' / '! ' / '? ' boundaries.
+
+    This is a lightweight heuristic (not abbreviation-aware, e.g. "Mr. Smith"
+    or "e.g." may be split early) but is good enough to keep chunk
+    boundaries from landing mid-sentence, which was the original problem.
+    """
+    return [s.strip() for s in _SENTENCE_SPLIT_RE.split(text) if s.strip()]
+
+
+def _chunk_words(words: list[str], chunk_size: int, overlap: int) -> list[str]:
+    """Word-boundary chunking. Used as a fallback for a single sentence
+    that alone exceeds chunk_size (e.g. a long line with no punctuation).
+    """
     chunks: list[str] = []
     start_word = 0
 
@@ -100,6 +107,68 @@ def chunk_text(text: str, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK_OVE
             previous_index -= 1
 
         start_word = max(previous_index + 1, start_word + 1)
+    return chunks
+
+
+def chunk_text(text: str, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP) -> list[str]:
+    if chunk_size <= 0:
+        raise ValueError("chunk_size must be positive")
+    if overlap < 0 or overlap >= chunk_size:
+        raise ValueError("overlap must be non-negative and smaller than chunk_size")
+
+    text = text.strip()
+    if not text:
+        return []
+
+    sentences = _split_sentences(text)
+    if not sentences:
+        return []
+
+    chunks: list[str] = []
+    start_sentence = 0
+
+    while start_sentence < len(sentences):
+        first_sentence = sentences[start_sentence]
+        if len(first_sentence) > chunk_size:
+            # This single sentence alone exceeds chunk_size (e.g. no
+            # punctuation at all, or one very long run-on line). Fall back
+            # to splitting it on word boundaries so we still make progress.
+            chunks.extend(_chunk_words(first_sentence.split(), chunk_size, overlap))
+            start_sentence += 1
+            continue
+
+        chunk_sentences: list[str] = [first_sentence]
+        current_length = len(first_sentence)
+        idx = start_sentence + 1
+
+        while idx < len(sentences):
+            sentence = sentences[idx]
+            next_length = current_length + 1 + len(sentence)
+            if next_length > chunk_size:
+                break
+            chunk_sentences.append(sentence)
+            current_length = next_length
+            idx += 1
+
+        chunks.append(" ".join(chunk_sentences))
+        if idx >= len(sentences):
+            break
+
+        # Carry trailing sentences from this chunk into the next one for
+        # continuity, up to `overlap` characters.
+        overlap_sentences: list[str] = []
+        overlap_length = 0
+        previous_index = idx - 1
+        while previous_index >= start_sentence:
+            sentence = sentences[previous_index]
+            next_length = len(sentence) if not overlap_sentences else overlap_length + 1 + len(sentence)
+            if next_length > overlap:
+                break
+            overlap_sentences.insert(0, sentence)
+            overlap_length = next_length
+            previous_index -= 1
+
+        start_sentence = max(previous_index + 1, start_sentence + 1)
     return chunks
 
 

@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from api.ingestor import (
+    _split_sentences,
     chunk_text,
     clean_text,
     extract_text,
@@ -84,6 +85,62 @@ def test_chunk_text_terminates_for_dense_short_text():
     chunks = chunk_text(text, chunk_size=30, overlap=10)
     assert len(chunks) > 0
     assert len(chunks) < 200  # sanity: shouldn't produce one chunk per word
+
+
+def test_chunk_text_splits_on_sentence_boundaries_not_mid_sentence():
+    # This is the behavior fix: chunks should start/end at sentence
+    # boundaries where possible, instead of at an arbitrary word-count cutoff
+    # that can land mid-sentence.
+    text = (
+        "Alpha sentence is here for testing purposes today. "
+        "Beta sentence follows right after that one. "
+        "Gamma sentence wraps up this short paragraph nicely."
+    )
+    chunks = chunk_text(text, chunk_size=60, overlap=10)
+
+    for chunk in chunks:
+        # Every chunk should start with a capital letter following a
+        # sentence, not a lowercase word fragment from mid-sentence.
+        assert chunk[0].isupper(), f"Chunk starts mid-sentence: {chunk!r}"
+        # Every chunk should end with sentence-ending punctuation.
+        assert chunk.rstrip()[-1] in ".!?", f"Chunk ends mid-sentence: {chunk!r}"
+
+
+def test_chunk_text_keeps_short_sentences_together_in_one_chunk():
+    text = "Short one. Short two. Short three."
+    chunks = chunk_text(text, chunk_size=200, overlap=20)
+
+    # All three sentences comfortably fit in one chunk_size=200 chunk.
+    assert len(chunks) == 1
+    assert chunks[0] == "Short one. Short two. Short three."
+
+
+def test_chunk_text_overlap_carries_whole_sentences_between_chunks():
+    text = (
+        "First sentence here for the test. "
+        "Second sentence continues the thought. "
+        "Third sentence pushes past the limit now. "
+        "Fourth sentence should land in the next chunk."
+    )
+    chunks = chunk_text(text, chunk_size=90, overlap=40)
+
+    assert len(chunks) >= 2
+    # The overlap sentence carried into chunk two should be a complete
+    # sentence (not a word fragment) shared with the end of chunk one.
+    first_chunk_sentences = set(_split_sentences(chunks[0]))
+    second_chunk_sentences = set(_split_sentences(chunks[1]))
+    assert first_chunk_sentences & second_chunk_sentences
+
+
+def test_chunk_text_falls_back_to_word_split_for_oversized_single_sentence():
+    # A "sentence" with no punctuation at all (e.g. a long unbroken line)
+    # that alone exceeds chunk_size must still get split, not emitted whole.
+    long_word = "a" * 50
+    text = f"start {long_word} end with no period at all here to force overflow"
+    chunks = chunk_text(text, chunk_size=20, overlap=5)
+
+    assert all(len(c) <= max(20, len(long_word)) for c in chunks)
+    assert any(long_word in c for c in chunks)
 
 
 def test_load_metadata_returns_empty_list_when_file_missing(tmp_path: Path):
