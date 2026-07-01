@@ -1,0 +1,11 @@
+.env
+uploads/
+data/faiss.index
+data/metadata.json
+__pycache__/
+*.pyc
+*.log
+.pytest_cache/
+venv/
+.venv/
+.DS_Store
